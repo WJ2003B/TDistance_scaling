@@ -205,6 +205,8 @@ class GCDataset:
         )
 
         if 'oracle_reps' in self.dataset:
+            batch['observations_oracle'] = self.dataset['oracle_reps'][idxs] 
+            batch['next_observations_oracle'] = self.dataset['oracle_reps'][np.minimum(idxs + 1, self.dataset.size - 1)]
             batch['value_goals'] = self.dataset['oracle_reps'][value_goal_idxs]
             batch['actor_goals'] = self.dataset['oracle_reps'][actor_goal_idxs]
         else:
