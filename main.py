@@ -4,6 +4,7 @@ import os
 import random
 import time
 from collections import defaultdict
+import datetime
 
 import numpy as np
 import tqdm
@@ -24,18 +25,18 @@ flags.DEFINE_string('run_group', 'Debug', 'Run group.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
 flags.DEFINE_string('env_name', 'puzzle-4x5-play-oraclerep-v0', 'Environment (dataset) name.')
 flags.DEFINE_string('dataset_dir', None, 'Dataset directory.')
-flags.DEFINE_integer('dataset_replace_interval', 1000, 'Dataset replace interval.')
+flags.DEFINE_integer('dataset_replace_interval', 20_000, 'Dataset replace interval.')
 flags.DEFINE_integer('num_datasets', None, 'Number of datasets to use.')
 flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
 flags.DEFINE_string('restore_path', None, 'Restore path.')
 flags.DEFINE_integer('restore_epoch', None, 'Restore epoch.')
 
-flags.DEFINE_integer('offline_steps', 5000000, 'Number of offline steps.')
+flags.DEFINE_integer('train_steps', 10_000_000, 'Number of offline steps.')
 flags.DEFINE_integer('log_interval', 10000, 'Logging interval.')
-flags.DEFINE_integer('eval_interval', 250000, 'Evaluation interval.')
+flags.DEFINE_list('eval_steps', [1_000_000, 2_000_000, 3_000_000, 4_000_000, 4_500_000, 4_750_000, 5_000_000, 6_000_000, 7_000_000, 8_000_000, 9_000_000, 9_500_000, 9_750_000, 10_000_000], 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', 5000000, 'Saving interval.')
 
-flags.DEFINE_integer('eval_episodes', 15, 'Number of episodes for each task.')
+flags.DEFINE_integer('eval_episodes', 50, 'Number of episodes for each task.')
 flags.DEFINE_float('eval_temperature', 0, 'Actor temperature for evaluation.')
 flags.DEFINE_float('eval_gaussian', None, 'Action Gaussian noise for evaluation.')
 flags.DEFINE_integer('video_episodes', 1, 'Number of video episodes for each task.')
@@ -46,8 +47,18 @@ config_flags.DEFINE_config_file('agent', 'agents/sharsa.py', lock_config=False)
 
 def main(_):
     # Set up logger.
+    os.environ['MUJOCO_GL'] = 'egl'
+    if 'SLURM_STEP_GPUS' in os.environ:
+        os.environ['EGL_DEVICE_ID'] = os.environ['SLURM_STEP_GPUS']
+    if 'SLURM_JOB_ID' in os.environ:
+        job_id = f's_{os.environ["SLURM_JOB_ID"]}.'
+    else:
+        job_id = ''
     exp_name = get_exp_name(FLAGS.seed)
-    setup_wandb(project='horizon-reduction', group=FLAGS.run_group, name=exp_name)
+    seed = exp_name.split("_")[0]
+    exp_name =  FLAGS.dataset_dir[:-4].split("/")[-1] + "_" + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S") + "_" + seed + job_id
+    run_group = datetime.datetime.now().strftime("%Y-%m-%d")
+    setup_wandb(project='CMD_Scaling', group=run_group, name=exp_name)
 
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
@@ -98,7 +109,7 @@ def main(_):
     first_time = time.time()
     last_time = time.time()
 
-    for i in tqdm.tqdm(range(1, FLAGS.offline_steps + 1), smoothing=0.1, dynamic_ncols=True):
+    for i in tqdm.tqdm(range(1, FLAGS.train_steps + 1), smoothing=0.1, dynamic_ncols=True):
         batch = train_dataset.sample(config['batch_size'])
         agent, update_info = agent.update(batch)
 
@@ -117,7 +128,7 @@ def main(_):
             train_logger.log(train_metrics, step=i)
 
         # Evaluate agent.
-        if FLAGS.eval_interval != 0 and (i == 1 or i % FLAGS.eval_interval == 0):
+        if i in FLAGS.eval_steps:
             renders = []
             eval_metrics = {}
             overall_metrics = defaultdict(list)
