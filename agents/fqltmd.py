@@ -97,16 +97,16 @@ class FQLTMDAgent(flax.struct.PyTreeNode):
 
         dist_next = self.mrn_distance(psi_next[:, :, None], psi_g[:, None, :])
 
-        t = self.config['t']
+        # t = self.config['t']
         gamma = self.config['discount']
         dist_next = jax.lax.stop_gradient(dist_next)
 
         delta = dist - dist_next
-        mask = delta > t
-        delta_clipped = jnp.where(mask, t, delta)
+        # mask = delta > t
+        # delta_clipped = jnp.where(mask, t, delta)
         # next_prob = jnp.exp(-dist_next)
         # divergence_clipped = next_prob * (jnp.log(gamma) + dist) - (1 - next_prob) * jnp.log(1 - jnp.exp(-dist) * gamma)
-        divergence = jnp.where(mask, delta, gamma * jnp.exp(delta_clipped) - dist)
+        divergence = gamma * jnp.exp(delta) - dist # jnp.where(mask, delta, gamma * jnp.exp(delta_clipped) - dist)
 
 
         dw = self.config['diag_backup']
@@ -119,7 +119,7 @@ class FQLTMDAgent(flax.struct.PyTreeNode):
 
         critic_loss = (
             contrastive_loss
-            + zeta * action_invariance_loss
+            # + zeta * action_invariance_loss
             + zeta * backup_loss
         )
 
@@ -154,25 +154,6 @@ class FQLTMDAgent(flax.struct.PyTreeNode):
         x_t = (1 - t) * x_0 + t * x_1
         vel = x_1 - x_0
 
-
-        # if self.config['use_latent']:
-        #     psi_s = self.network.select('psi')(batch['observations'], params=grad_params)
-        #     psi_g = self.network.select('psi')(batch['actor_goals'], params=grad_params)
-        #     if len(psi_g.shape) == 3:
-        #         psi_s = jnp.mean(psi_s, axis=0)
-        #         psi_g = jnp.mean(psi_g, axis=0)
-        #     if self.config['freeze_enc_for_actor_grad']:
-        #         psi_g = jax.lax.stop_gradient(psi_g)
-        #         psi_s = jax.lax.stop_gradient(psi_s)
-        #     pred = self.network.select('actor_bc_flow')(jax.lax.stop_gradient(psi_s), x_t, jax.lax.stop_gradient(psi_g), t, params=grad_params)
-        #     bc_flow_loss = jnp.mean((pred - vel) ** 2)
-
-        #     # Distillation loss.
-        #     rng, noise_rng = jax.random.split(rng)
-        #     noises = jax.random.normal(noise_rng, (batch_size, action_dim))
-        #     target_flow_actions = self.compute_flow_actions(psi_s, psi_g, noises=noises)
-        #     actor_actions = self.network.select('actor_onestep_flow')(psi_s, noises, psi_g, params=grad_params)
-        # else:
         pred = self.network.select('actor_bc_flow')(batch['observations'], x_t, batch["actor_goals"], t, params=grad_params)
         bc_flow_loss = jnp.mean((pred - vel) ** 2)
         # Distillation loss.
@@ -183,7 +164,6 @@ class FQLTMDAgent(flax.struct.PyTreeNode):
         
         distill_loss = jnp.mean((actor_actions - target_flow_actions) ** 2)
 
-        # Q loss.
         actor_actions = jnp.clip(actor_actions, -1, 1)
 
         if self.config['oracle']:
@@ -403,14 +383,14 @@ class FQLTMDAgent(flax.struct.PyTreeNode):
         if not config['use_latent']:
             network_info = dict(
                 phi=(phi_def, (ex_observations, ex_actions)),
-                psi=(copy.deepcopy(psi_def), (ex_observations, )),
+                psi=(copy.deepcopy(psi_def), (ex_goals, )),
             actor_bc_flow=(actor_bc_flow_def, (ex_observations, ex_actions, ex_goals, ex_times)),
             actor_onestep_flow=(actor_onestep_flow_def, (ex_observations, ex_actions, ex_goals)),)
         else:
             embed = jnp.zeros((1, config['latent_dim']))
             network_info = dict(
                 phi=(phi_def, (ex_observations, ex_actions)),
-                psi=(copy.deepcopy(psi_def), (ex_observations, )),
+                psi=(copy.deepcopy(psi_def), (ex_goals, )),
             actor_bc_flow=(actor_bc_flow_def, (embed, ex_actions, embed, ex_times)),
             actor_onestep_flow=(actor_onestep_flow_def, (embed, ex_actions, embed)),)
         if encoders.get('actor_bc_flow') is not None:
@@ -438,8 +418,8 @@ def get_config():
             lr=3e-4,  # Learning rate.
             batch_size=256,  # Batch size.
             components=8,  # Number of components in MRN.
-            actor_hidden_dims=(512, 512, 512, 512),  # Actor network hidden dimensions.
-            value_hidden_dims=(512, 512, 512, 512),  # Value network hidden dimensions.
+            actor_hidden_dims=(1024, 1024, 1024, 1024),  # Actor network hidden dimensions.
+            value_hidden_dims=(1024, 1024, 1024, 1024),  # Value network hidden dimensions.
             latent_dim=512,  # Latent dimension for phi and psi.
             layer_norm=True,  # Whether to use layer normalization.
             actor_layer_norm=False,  # Whether to use layer normalization for the actor.
@@ -450,7 +430,7 @@ def get_config():
             normalize_q_loss=True,  # Whether to normalize the Q loss.
             zeta=0.01,
             t=3.0,
-            diag_backup=0.5,  # Whether to use diagonal backup.
+            diag_backup=1.0,  # Whether to use diagonal backup.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
             actor_log_q=True,  # Whether to maximize log Q (True) or Q itself (False) in the actor loss.
             const_std=True,  # Whether to use constant standard deviation for the actor.
@@ -468,11 +448,12 @@ def get_config():
             gc_negative=False,  # Unused (defined for compatibility with GCDataset).
             p_aug=0.0,  # Probability of applying image augmentation.
             use_iqe=False,  # Whether to use IQE distance or MRN distance
-            use_latent=True, # Whether to use latent for policy action sampling
+            use_latent=False, # Whether to use latent for policy action sampling
             freeze_enc_for_actor_grad=False, # Whether to stop grad for actor when using encoder
             frame_stack=ml_collections.config_dict.placeholder(int),  # Number of frames to stack.
             use_action_for_distance=False, # Whether to use action for distance calculation
             direct_optimization=True, # Whether to directly optimize the actor
+            oracle=True, # Whether to use oracle for distance calculation
         )
     )
     return config

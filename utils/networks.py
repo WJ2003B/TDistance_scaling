@@ -737,6 +737,8 @@ class ActorVectorField(nn.Module):
                 inputs = jnp.concatenate([observations, actions, times], axis=-1)
             else:
                 inputs = jnp.concatenate([observations, actions, goals, times], axis=-1)
+        
+        # print(inputs.shape)
 
         v = self.mlp(inputs)
 
