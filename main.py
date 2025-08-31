@@ -11,13 +11,14 @@ import tqdm
 import wandb
 from absl import app, flags
 from ml_collections import config_flags
+import matplotlib.pyplot as plt
 
 from agents import agents
 from envs.env_utils import make_env_and_datasets
 from utils.datasets import Dataset, GCDataset, HGCDataset
 from utils.evaluation import evaluate
 from utils.flax_utils import restore_agent, save_agent
-from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
+from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb, log_distances
 
 FLAGS = flags.FLAGS
 
@@ -25,7 +26,7 @@ flags.DEFINE_string('run_group', 'Debug', 'Run group.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
 flags.DEFINE_string('env_name', 'puzzle-4x5-play-oraclerep-v0', 'Environment (dataset) name.')
 flags.DEFINE_string('dataset_dir', None, 'Dataset directory.')
-flags.DEFINE_integer('dataset_replace_interval', 20_000, 'Dataset replace interval.')
+flags.DEFINE_integer('dataset_replace_interval', 4_000, 'Dataset replace interval.')
 flags.DEFINE_integer('num_datasets', None, 'Number of datasets to use.')
 flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
 flags.DEFINE_string('restore_path', None, 'Restore path.')
@@ -35,6 +36,8 @@ flags.DEFINE_integer('train_steps', 10_000_000, 'Number of offline steps.')
 flags.DEFINE_integer('log_interval', 10000, 'Logging interval.')
 flags.DEFINE_list('eval_steps', [1_000_000, 2_000_000, 3_000_000, 4_000_000, 4_500_000, 4_750_000, 5_000_000, 6_000_000, 7_000_000, 8_000_000, 9_000_000, 9_500_000, 9_750_000, 10_000_000], 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', 5000000, 'Saving interval.')
+flags.DEFINE_integer('plot_interval', 500_000, 'Plot interval.')
+flags.DEFINE_boolean('plot', True, 'Whether to plot.')
 
 flags.DEFINE_integer('eval_episodes', 50, 'Number of episodes for each task.')
 flags.DEFINE_float('eval_temperature', 0, 'Actor temperature for evaluation.')
@@ -57,10 +60,10 @@ def main(_):
     exp_name = get_exp_name(FLAGS.seed)
     seed = exp_name.split("_")[0]
     exp_name =  FLAGS.dataset_dir[:-4].split("/")[-1] + "_" + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S") + "_" + seed + job_id
-    run_group = datetime.datetime.now().strftime("%Y-%m-%d")
+    run_group = datetime.datetime.now().strftime("%Y-%m-%d") if FLAGS.run_group=="Debug" else FLAGS.run_group
     setup_wandb(project='CMD_Scaling', group=run_group, name=exp_name)
 
-    FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
+    FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, run_group, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
     flag_dict = get_flag_dict()
     with open(os.path.join(FLAGS.save_dir, 'flags.json'), 'w') as f:
@@ -178,6 +181,45 @@ def main(_):
             )
             train_dataset = dataset_class(Dataset.create(**train_dataset), config)
             val_dataset = dataset_class(Dataset.create(**val_dataset), config)
+        if ("tmd" in config['agent_name'].lower() or "cmd" in config['agent_name'].lower()) and (i % FLAGS.plot_interval == 50_000 or i == FLAGS.train_steps) and ("maze" in FLAGS.env_name or "soccer" in FLAGS.env_name) and FLAGS.plot:
+            # only plot for maze environments
+            task_infos = env.unwrapped.task_infos if hasattr(env.unwrapped, 'task_infos') else env.task_infos
+            num_tasks = len(task_infos)
+            density = 4
+            dists, goals, coords, original_obs = log_distances(agent, env, num_tasks, density, example_batch['actions'], use_action=config['use_action_for_distance'])
+            for j, (dist, goal, original_obs) in enumerate(zip(dists, goals, original_obs)):
+                fig = plt.figure(figsize=(16,10))
+                ax = fig.add_subplot(1,1,1)
+                x = coords[:,0]
+                y = coords[:,1]
+                gx, gy = goal[:2]
+                ox, oy = original_obs[:2]
+                sc = ax.scatter(x, y, c=dist, cmap='plasma_r', s=50, edgecolor=None)
+                ax.scatter(gx, gy,
+                            marker='*',      # star marker
+                            s=200,           # size of the star
+                            color='gold',    # gold color
+                            edgecolor='k',   # optional black edge
+                            zorder=3,        # draw on top
+                            label='Goal')
+
+                ax.scatter(ox, oy,
+                            marker='*',      # star marker
+                            s=200,           # size of the star
+                            color='white',    # white color
+                            edgecolor='k',   # optional black edge
+                            zorder=3,        # draw on top
+                            label='Start')
+                
+                cb = fig.colorbar(sc, ax=ax)
+                cb.set_label("distance")
+                ax.legend(loc='best')
+                ax.set_axis_off()
+                ax.set_title('Distances')
+                wandb.log({f"plots/distances_task_{j+1}": wandb.Image(fig)}, step=i)
+                wandb.log({f"plots/distances_task_{j+1}_max": np.max(dist)}, step=i)
+                wandb.log({f"plots/distances_task_{j+1}_min": np.min(dist)}, step=i)
+                plt.close(fig)
 
     train_logger.close()
     eval_logger.close()
