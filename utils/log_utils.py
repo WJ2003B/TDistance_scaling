@@ -5,6 +5,8 @@ from datetime import datetime
 import absl.flags as flags
 import ml_collections
 import numpy as np
+import jax
+import jax.numpy as jnp
 import wandb
 from PIL import Image, ImageEnhance
 
@@ -144,3 +146,89 @@ def get_wandb_video(renders=None, n_cols=None, fps=15):
     renders = reshape_video(renders, n_cols)  # (t, c, nr * h, nc * w)
 
     return wandb.Video(renders, fps=fps, format='mp4')
+
+def xy_to_ij(env, xy):
+    maze_unit = env.unwrapped._maze_unit
+    i = ((xy[1] + env.unwrapped._offset_y + 0.5 * maze_unit) / maze_unit).astype(int)
+    j = ((xy[0] + env.unwrapped._offset_x + 0.5 * maze_unit) / maze_unit).astype(int)
+    return i, j
+
+def ij_to_xy(env, ij):
+    i, j = ij
+    x = j * env.unwrapped._maze_unit - env.unwrapped._offset_x
+    y = i * env.unwrapped._maze_unit - env.unwrapped._offset_y
+    return x, y
+
+def check_valid(env, coords):
+    maze_map = jnp.array(env.unwrapped.maze_map)
+    ij = xy_to_ij(env, coords)
+    return maze_map[ij[0], ij[1]]
+
+def get_grid(maze_env, density=1):
+    maze_map = jnp.array(maze_env.unwrapped.maze_map)
+    # print("maze_map shape: ",maze_map.shape)
+    upper_left_x, upper_left_y = ij_to_xy(maze_env, (0, 0))
+    lower_right_x, lower_right_y = ij_to_xy(maze_env, maze_map.shape)
+    x = jnp.linspace(upper_left_x, lower_right_x, int(lower_right_x - upper_left_x) * density)
+    y = jnp.linspace(upper_left_y, lower_right_y, int(lower_right_y - upper_left_y) * density)
+    x, y = jnp.meshgrid(x, y)
+    # print("meshgrid shape: ",x.shape)
+    x, y= x.ravel(), y.ravel()
+    return jnp.stack([x, y], axis=-1)
+
+def get_valid_coords(env, density=1):
+    grid = get_grid(env, density)
+    # print(grid.shape)
+    ij = jax.vmap(check_valid, in_axes=(None, 0))(env, grid)
+    valid = grid[jnp.argwhere(ij ==0),...]
+    return valid.reshape(-1, 2)
+
+def evaluate_value(
+    agent,
+    env,
+    goal,
+    density=1,
+    actions=None,
+    use_action=False
+):
+    "returns a grid of values that corresponds to the initial state"
+    "value is calculated as d^{mrn}_theta(s_0, g)"
+    valid_coords = get_valid_coords(env, density)
+    observation = env.unwrapped.get_ob()
+    original_obs = observation[:2]
+
+    all_obs = np.repeat(observation[None], valid_coords.shape[0], axis=0)
+    # print("all_obs.shape", all_obs.shape)
+    all_obs[:, :2] = valid_coords
+    # if all_obs.shape[1] == 4:
+    #     all_obs[:, 2:] = np.random.randn(all_obs.shape[0], 2)*0.1
+    
+    all_obs = jnp.array(all_obs)
+    goal = jnp.repeat(goal[None], valid_coords.shape[0], axis=0)
+    if use_action:
+        key = jax.random.PRNGKey(np.random.randint(0, 1000000))
+        split = jax.random.split(key, goal.shape[0])
+        actions = jax.vmap(agent.sample_actions, in_axes=(0, 0, 0))(all_obs, goal, split)
+    else:
+        actions = None
+    dist = agent.get_distance(all_obs, goal, actions)
+    # phi = agent.network.select('psi')(all_obs)
+    # psi = agent.network.select('psi')(goal)
+    # dist = agent.mrn_distance(phi, psi)
+    return dist, original_obs
+
+def log_distances(agent, env, num_tasks, density=1, actions=None, use_action=False):
+    dists = []
+    goals = []
+    original_obs = []
+    coords = get_valid_coords(env, density)
+    for i in range(1, num_tasks + 1):
+        _, info = env.reset(options=dict(task_id=i, render_goal=True))
+        goal = info['goal']
+        dist, original_ob = evaluate_value(agent, env, goal, density, actions, use_action)
+        dist = jnp.max(dist, axis=0)
+        dists.append(dist)
+        goals.append(goal)
+        original_obs.append(original_ob)
+    return dists, goals, coords, original_obs
+
