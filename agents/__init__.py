@@ -10,6 +10,8 @@ from agents.ngcsacbc import NGCSACBCAgent
 from agents.sharsa import SHARSAAgent
 from agents.tmd import TMDAgent
 from agents.fqltmd import FQLTMDAgent
+from agents.f_tmd import F_TMDAgent
+from agents.tmd_new import TMD2Agent
 
 agents = dict(
     crl=CRLAgent,
@@ -24,4 +26,6 @@ agents = dict(
     sharsa=SHARSAAgent,
     tmd=TMDAgent,
     fqltmd=FQLTMDAgent,
+    f_tmd=F_TMDAgent,
+    tmd2=TMD2Agent,
 )
